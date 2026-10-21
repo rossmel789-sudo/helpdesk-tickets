@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Instalar dependencias
+        run: npm ci
+      - name: Verificar sintaxis de todos los archivos JS
+        run: |
+          for f in *.js; do
+            echo "Revisando $f"
+            node --check "$f"
+          done
+      - name: Auditoría de dependencias (informativa)
+        run: npm audit --audit-level=high
+        continue-on-error: true
