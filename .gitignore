@@ -1,0 +1,16 @@
+# Secretos y dependencias (NUNCA subir)
+.env
+node_modules/
+
+# Archivos de prueba locales (contienen credenciales de usuarios de prueba)
+test-*.json
+
+# Respaldos y carpetas sueltas
+*.bak
+*.bak2
+Code Snippets/
+Templates/
+
+# Archivos generados
+reporte_tickets.xlsx
+*.log
