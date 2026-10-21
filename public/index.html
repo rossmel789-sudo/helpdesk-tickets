@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Help Desk</title>
+<style>
+:root{--azul:#1f4e79;--gris:#f3f5f8;--borde:#d5dbe3}
+*{box-sizing:border-box}
+[hidden]{display:none !important}
+body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--gris);color:#1b2430}
+header{background:var(--azul);color:#fff;padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+header .esp{flex:1}
+main{max-width:1000px;margin:16px auto;padding:0 12px}
+.tarjeta{background:#fff;border:1px solid var(--borde);border-radius:8px;padding:14px;margin-bottom:14px}
+h2,h3,h4{margin:0 0 10px}
+label{display:block;margin:8px 0 4px;font-size:14px}
+input,select,textarea,button{font:inherit;padding:8px;border:1px solid var(--borde);border-radius:6px}
+input,textarea,select{width:100%}
+button{background:var(--azul);color:#fff;border:0;cursor:pointer;padding:8px 14px}
+button.sec{background:#fff;color:var(--azul);border:1px solid var(--azul)}
+nav{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+nav button.act{background:#0f2a44}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:7px 8px;border-bottom:1px solid var(--borde);text-align:left;vertical-align:top}
+tr.fila{cursor:pointer}
+tr.fila:hover{background:#eef3f9}
+.badge{padding:2px 8px;border-radius:10px;font-size:12px;background:#e7ecf3}
+.Abierto{background:#fde8c8}.Asignado{background:#dbe8fb}.EnProceso{background:#e6dcf7}.Resuelto{background:#d7f0dc}.Cerrado{background:#e2e5ea}
+.fila2{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.fila2>*{flex:1;min-width:140px}
+#aviso{max-width:1000px;margin:10px auto 0;padding:0 12px}
+#aviso.ok,#aviso.err{padding:10px 14px;border-radius:6px}
+#aviso.ok{background:#d7f0dc;color:#1c5a2b}
+#aviso.err{background:#fbe0e0;color:#8a1f1f}
+#botBtn{position:fixed;right:16px;bottom:16px;width:52px;height:52px;border-radius:50%;font-size:22px;padding:0}
+#bot{position:fixed;right:16px;bottom:78px;width:300px;max-width:calc(100% - 32px);background:#fff;border:1px solid var(--borde);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2)}
+#bot .bh{background:var(--azul);color:#fff;padding:8px 10px;font-size:14px;border-radius:8px 8px 0 0}
+#botMsgs{height:230px;overflow:auto;padding:8px;font-size:14px}
+#botMsgs div{margin:4px 0;padding:6px 8px;border-radius:6px;max-width:90%}
+#botMsgs .yo{background:#dbe8fb;margin-left:auto}
+#botMsgs .bot{background:#f0f2f5}
+#botF{display:flex;gap:6px;padding:8px;border-top:1px solid var(--borde)}
+</style>
+</head>
+<body>
+<header id="cabecera" hidden>
+  <strong>Help Desk</strong><span id="quien"></span><span class="esp"></span>
+  <button class="sec" id="salir">Cerrar sesión</button>
+</header>
+<div id="aviso"></div>
+<main id="app"></main>
+
+<button id="botBtn" title="Asistente virtual">💬</button>
+<div id="bot" hidden>
+  <div class="bh">Asistente virtual (preguntas frecuentes)</div>
+  <div id="botMsgs"></div>
+  <form id="botF"><input id="botIn" placeholder="Escribe tu pregunta…" autocomplete="off"><button>Enviar</button></form>
+</div>
+
+<script>
+const ROLES = { 1: 'Cliente', 2: 'Técnico', 3: 'Administrador' };
+const ESTADOS = ['Abierto', 'Asignado', 'En Proceso', 'Resuelto', 'Cerrado'];
+const PRIOS = ['Baja', 'Media', 'Alta'];
+const SIGUIENTES = { 'Asignado': ['En Proceso'], 'En Proceso': ['Resuelto'], 'Resuelto': ['En Proceso', 'Cerrado'] };
+
+let sesion = null, vista = 'tickets', recargarLista = () => {};
+try { sesion = JSON.parse(sessionStorage.getItem('sesion')); } catch (e) { sesion = null; }
+
+const $ = (s) => document.querySelector(s);
+// Todo texto que viene del servidor se escapa antes de mostrarse (evita XSS)
+const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const clase = (e) => String(e).replace(/\s/g, '');
+const fecha = (f) => f ? new Date(f).toLocaleString('es-PE', { timeZone: 'UTC' }) : '—';
+const tab = (cols, filas) => '<table><tr>' + cols.map((c) => `<th>${esc(c)}</th>`).join('') + '</tr>' +
+  filas.map((f) => '<tr>' + f.map((c) => `<td>${esc(c)}</td>`).join('') + '</tr>').join('') + '</table>';
+const opciones = (lista, vacio) => (vacio ? `<option value="">${vacio}</option>` : '') + lista.map((x) => `<option>${esc(x)}</option>`).join('');
+
+function aviso(msg, ok) { const a = $('#aviso'); a.textContent = msg || ''; a.className = msg ? (ok ? 'ok' : 'err') : ''; }
+async function accion(fn) { try { aviso(''); await fn(); } catch (e) { aviso(e.message, false); } }
+
+async function api(ruta, op = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (sesion) headers.Authorization = 'Bearer ' + sesion.token;
+  const r = await fetch(ruta, { ...op, headers });
+  let d = null; try { d = await r.json(); } catch (e) {}
+  if (r.status === 401 && sesion) { salir(); throw new Error('Tu sesión terminó. Inicia sesión de nuevo.'); }
+  if (!r.ok) throw new Error((d && d.error) || 'Error ' + r.status);
+  return d;
+}
+const post = (ruta, cuerpo) => api(ruta, { method: 'POST', body: JSON.stringify(cuerpo) });
+
+function salir() {
+  sesion = null; vista = 'tickets';
+  try { sessionStorage.removeItem('sesion'); } catch (e) {}
+  render();
+}
+$('#salir').onclick = salir;
+
+function render() {
+  $('#cabecera').hidden = !sesion;
+  if (!sesion) return vistaLogin();
+  $('#quien').textContent = sesion.nombre + ' · ' + ROLES[sesion.rol];
+  const tabs = sesion.rol === 1 ? [['tickets', 'Mis tickets'], ['nuevo', 'Nuevo ticket']]
+    : sesion.rol === 2 ? [['tickets', 'Tickets']]
+    : [['tickets', 'Tickets'], ['reportes', 'Reportes'], ['bitacora', 'Bitácora']];
+  if (!tabs.some((t) => t[0] === vista)) vista = 'tickets';
+  $('#app').innerHTML = '<nav>' + tabs.map((t) => `<button class="${vista === t[0] ? 'act' : 'sec'}" data-v="${t[0]}">${t[1]}</button>`).join('') + '</nav><div id="vista"></div>';
+  document.querySelectorAll('nav button').forEach((b) => b.onclick = () => { aviso(''); vista = b.dataset.v; render(); });
+  ({ tickets: vistaTickets, nuevo: vistaNuevo, reportes: vistaReportes, bitacora: vistaBitacora })[vista]();
+}
+
+// ---------- Login y registro ----------
+function vistaLogin() {
+  $('#app').innerHTML = `<div class="tarjeta" style="max-width:380px;margin:40px auto"><h2>Help Desk</h2>
+    <form id="fl"><label>Correo</label><input id="em" type="email" required autocomplete="username">
+    <label>Contraseña</label><input id="pw" type="password" required autocomplete="current-password">
+    <p><button>Ingresar</button> <button type="button" class="sec" id="bReg">Crear cuenta</button></p></form></div>`;
+  $('#fl').onsubmit = (ev) => {
+    ev.preventDefault();
+    accion(async () => {
+      const d = await post('/login', { email: $('#em').value, password: $('#pw').value });
+      sesion = { token: d.token, nombre: d.nombre, rol: d.rol };
+      const p = await api('/perfil');
+      sesion.id = p.usuario.id_usuario;
+      try { sessionStorage.setItem('sesion', JSON.stringify(sesion)); } catch (e) {}
+      vista = 'tickets';
+      render();
+    });
+  };
+  $('#bReg').onclick = vistaRegistro;
+}
+function vistaRegistro() {
+  aviso('');
+  $('#app').innerHTML = `<div class="tarjeta" style="max-width:380px;margin:40px auto"><h2>Crear cuenta</h2>
+    <form id="fr"><label>Nombre</label><input id="rn" required>
+    <label>Correo</label><input id="re" type="email" required>
+    <label>Contraseña (8+ caracteres, mayúscula, minúscula y número)</label><input id="rp" type="password" required>
+    <p><button>Registrarme</button> <button type="button" class="sec" id="bVol">Volver</button></p></form></div>`;
+  $('#bVol').onclick = vistaLogin;
+  $('#fr').onsubmit = (ev) => {
+    ev.preventDefault();
+    accion(async () => {
+      await post('/register', { nombre: $('#rn').value, email: $('#re').value, password: $('#rp').value });
+      vistaLogin();
+      aviso('Cuenta creada. Ya puedes iniciar sesión.', true);
+    });
+  };
+}
+
+// ---------- Tickets ----------
+function vistaTickets() {
+  const filtros = sesion.rol > 1;
+  $('#vista').innerHTML = `<div class="tarjeta"><h3>${sesion.rol === 1 ? 'Mis tickets' : 'Todos los tickets'}</h3>` +
+    (filtros ? `<div class="fila2"><select id="fe">${opciones(ESTADOS, 'Todos los estados')}</select><select id="fp">${opciones(PRIOS, 'Todas las prioridades')}</select></div>` : '') +
+    '<div id="lista">Cargando…</div></div><div id="detalle"></div>';
+  recargarLista = () => accion(async () => {
+    const q = new URLSearchParams();
+    if (filtros && $('#fe').value) q.set('estado', $('#fe').value);
+    if (filtros && $('#fp').value) q.set('prioridad', $('#fp').value);
+    const lista = await api('/tickets' + (q.toString() ? '?' + q : ''));
+    $('#lista').innerHTML = lista.length
+      ? '<table><tr><th>ID</th><th>Título</th><th>Estado</th><th>Prioridad</th><th>Cliente</th><th>Técnico</th><th>Creado</th></tr>' +
+        lista.map((t) => `<tr class="fila" data-id="${Number(t.id_ticket)}"><td>${Number(t.id_ticket)}</td><td>${esc(t.titulo)}</td><td><span class="badge ${clase(t.estado)}">${esc(t.estado)}</span></td><td>${esc(t.prioridad)}</td><td>${esc(t.cliente)}</td><td>${esc(t.tecnico || '—')}</td><td>${fecha(t.fecha_creacion)}</td></tr>`).join('') + '</table>'
+      : 'No hay tickets.';
+    document.querySelectorAll('tr.fila').forEach((f) => f.onclick = () => detalle(Number(f.dataset.id)));
+  });
+  if (filtros) { $('#fe').onchange = recargarLista; $('#fp').onchange = recargarLista; }
+  recargarLista();
+}
+
+async function detalle(id) {
+  await accion(async () => {
+    const d = await api('/tickets/' + id);
+    const t = d.ticket;
+    const puedeEstado = sesion.rol === 3 || (sesion.rol === 2 && t.id_tecnico === sesion.id);
+    const sig = SIGUIENTES[t.estado] || [];
+    let h = `<div class="tarjeta"><h3>#${Number(t.id_ticket)} · ${esc(t.titulo)}</h3><p>${esc(t.descripcion)}</p>
+      <p><span class="badge ${clase(t.estado)}">${esc(t.estado)}</span> Prioridad: <b>${esc(t.prioridad)}</b> · Cliente: ${esc(t.cliente)} · Técnico: ${esc(t.tecnico || 'Sin asignar')}</p>
+      <p>Creado: ${fecha(t.fecha_creacion)} · Cierre: ${fecha(t.fecha_cierre)}</p>`;
+    if (sesion.rol === 3 && t.estado !== 'Cerrado') h += '<div class="fila2"><select id="selTec"></select><button id="bAsig">Asignar técnico</button></div>';
+    if (puedeEstado && sig.length) {
+      h += '<label>Comentario del cambio (opcional)</label><input id="cEst" maxlength="300"><p>' +
+        sig.map((s) => `<button class="est" data-e="${esc(s)}">Pasar a ${esc(s)}</button>`).join(' ') + '</p>';
+    }
+    h += '<h4>Historial</h4><ul>' + d.historial.map((x) =>
+      `<li>${fecha(x.fecha_hora)} · <b>${esc(x.usuario)}</b> → ${esc(x.estado_nuevo)}${x.comentario ? ': ' + esc(x.comentario) : ''}</li>`).join('') + '</ul>';
+    if (t.estado !== 'Cerrado') h += '<label>Agregar comentario</label><textarea id="cNue" rows="2" maxlength="300"></textarea><p><button id="bCom">Comentar</button></p>';
+    $('#detalle').innerHTML = h + '</div>';
+
+    const refrescar = (msg) => { aviso(msg, true); recargarLista(); detalle(id); };
+    if ($('#selTec')) {
+      const tec = await api('/tickets/tecnicos/lista');
+      $('#selTec').innerHTML = tec.length ? tec.map((x) => `<option value="${Number(x.id_usuario)}">${esc(x.nombre)}</option>`).join('') : '<option value="">No hay técnicos activos</option>';
+      $('#bAsig').onclick = () => accion(async () => { await post(`/tickets/${id}/asignar`, { id_tecnico: Number($('#selTec').value) }); refrescar('Ticket asignado'); });
+    }
+    document.querySelectorAll('button.est').forEach((b) => b.onclick = () => accion(async () => {
+      const cuerpo = { estado: b.dataset.e }; const c = $('#cEst').value.trim(); if (c) cuerpo.comentario = c;
+      await post(`/tickets/${id}/estado`, cuerpo); refrescar('Estado actualizado');
+    }));
+    if ($('#bCom')) $('#bCom').onclick = () => accion(async () => { await post(`/tickets/${id}/comentarios`, { comentario: $('#cNue').value }); refrescar('Comentario agregado'); });
+  });
+}
+
+function vistaNuevo() {
+  $('#vista').innerHTML = `<div class="tarjeta"><h3>Nuevo ticket</h3><form id="fn">
+    <label>Título</label><input id="nt" maxlength="150" required>
+    <label>Descripción del problema</label><textarea id="nd" rows="4" maxlength="500" required></textarea>
+    <label>Prioridad</label><select id="np">${opciones(PRIOS).replace('<option>Media', '<option selected>Media')}</select>
+    <p><button>Crear ticket</button></p></form></div>`;
+  $('#fn').onsubmit = (ev) => {
+    ev.preventDefault();
+    accion(async () => {
+      const r = await post('/tickets', { titulo: $('#nt').value, descripcion: $('#nd').value, prioridad: $('#np').value });
+      vista = 'tickets'; render(); detalle(r.id_ticket);
+      aviso('Ticket creado (#' + r.id_ticket + ')', true);
+    });
+  };
+}
+
+// ---------- Reportes y bitácora (Administrador) ----------
+function vistaReportes() {
+  $('#vista').innerHTML = '<div class="tarjeta">Cargando…</div>';
+  accion(async () => {
+    const r = await api('/reportes/resumen');
+    $('#vista').innerHTML = `<div class="tarjeta"><h3>Resumen</h3>
+      <p>Total de tickets: <b>${Number(r.total_tickets)}</b> · Tiempo promedio de cierre: <b>${r.tiempo_promedio_cierre_horas ?? '—'}</b> horas</p>
+      <button id="bXls">Descargar Excel</button></div>
+      <div class="tarjeta"><h3>Por estado</h3>${tab(['Estado', 'Total'], r.por_estado.map((x) => [x.estado, x.total]))}</div>
+      <div class="tarjeta"><h3>Por prioridad</h3>${tab(['Prioridad', 'Total'], r.por_prioridad.map((x) => [x.prioridad, x.total]))}</div>
+      <div class="tarjeta"><h3>Por técnico</h3>${tab(['Técnico', 'Total', 'Cerrados'], r.por_tecnico.map((x) => [x.tecnico, x.total, x.cerrados]))}</div>`;
+    $('#bXls').onclick = () => accion(async () => {
+      const resp = await fetch('/reportes/tickets.xlsx', { headers: { Authorization: 'Bearer ' + sesion.token } });
+      if (!resp.ok) throw new Error('No se pudo descargar el reporte');
+      const url = URL.createObjectURL(await resp.blob());
+      const a = document.createElement('a'); a.href = url; a.download = 'reporte_tickets.xlsx'; a.click();
+      URL.revokeObjectURL(url);
+    });
+  });
+}
+function vistaBitacora() {
+  $('#vista').innerHTML = '<div class="tarjeta">Cargando…</div>';
+  accion(async () => {
+    const b = await api('/admin/bitacora');
+    $('#vista').innerHTML = '<div class="tarjeta"><h3>Bitácora de auditoría (últimos 20)</h3>' +
+      tab(['ID', 'Usuario', 'Acción', 'Detalle', 'Fecha'], b.map((x) => [x.id_bitacora, x.id_usuario ?? '—', x.accion, x.detalle ?? '', fecha(x.fecha_hora)])) + '</div>';
+  });
+}
+
+// ---------- Asistente virtual (preguntas frecuentes) ----------
+const norm = (t) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const FAQ = [
+  { k: ['contrasena', 'clave', 'password'], r: 'La contraseña debe tener al menos 8 caracteres, con una mayúscula, una minúscula y un número.' },
+  { k: ['bloquead', 'bloqueo'], r: 'La cuenta se bloquea tras 5 intentos fallidos de inicio de sesión. Comunícate con un Administrador para que la desbloquee.' },
+  { k: ['crear', 'nuevo ticket', 'reportar', 'abrir'], r: 'Inicia sesión como Cliente, entra a "Nuevo ticket", escribe el título, la descripción del problema y la prioridad, y presiona "Crear ticket".' },
+  { k: ['estado', 'seguimiento', 'como va'], r: 'Los estados son: Abierto, Asignado, En Proceso, Resuelto y Cerrado. Puedes verlos en "Mis tickets", junto con todo el historial.' },
+  { k: ['prioridad', 'urgente'], r: 'Las prioridades son Baja, Media y Alta. Elige Alta solo cuando el problema te impide trabajar.' },
+  { k: ['impresora', 'imprimir'], r: 'Revisa que la impresora esté encendida y conectada a la red, que tenga papel y que no haya trabajos atascados en la cola. Si sigue sin funcionar, crea un ticket.' },
+  { k: ['internet', 'wifi', 'conexion'], r: 'Verifica que el cable o el Wi-Fi estén conectados y reinicia tu equipo. Si otros equipos tampoco tienen conexión, crea un ticket con prioridad Alta.' },
+  { k: ['lenta', 'lento', 'congela', 'cuelga'], r: 'Cierra los programas que no uses y reinicia el equipo. Si continúa lento, crea un ticket describiendo cuándo ocurre.' },
+  { k: ['hola', 'buenas', 'ayuda'], r: 'Hola, soy el asistente de preguntas frecuentes. Pregúntame por contraseñas, cuenta bloqueada, cómo crear un ticket, estados, prioridades, impresora, internet o equipo lento.' },
+];
+function botMsg(texto, quien) { const d = document.createElement('div'); d.className = quien; d.textContent = texto; $('#botMsgs').appendChild(d); $('#botMsgs').scrollTop = 1e6; }
+$('#botBtn').onclick = () => { const b = $('#bot'); b.hidden = !b.hidden; if (!b.hidden && !$('#botMsgs').children.length) botMsg('Hola, ¿en qué te ayudo? Escribe tu duda.', 'bot'); };
+$('#botF').onsubmit = (ev) => {
+  ev.preventDefault();
+  const q = $('#botIn').value.trim(); if (!q) return;
+  botMsg(q, 'yo'); $('#botIn').value = '';
+  const n = norm(q); const hit = FAQ.find((f) => f.k.some((k) => n.includes(k)));
+  botMsg(hit ? hit.r : 'No tengo una respuesta para eso. Si el problema persiste, crea un ticket y un técnico lo atenderá.', 'bot');
+};
+
+render();
+</script>
+</body>
+</html>
